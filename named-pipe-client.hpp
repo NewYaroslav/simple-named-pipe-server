@@ -35,6 +35,8 @@
 
 namespace SimpleNamedPipe {
 
+    /** \brief Класс клиента именованных каналов
+     */
     class NamedPipeClient {
     private:
         HANDLE pipe = INVALID_HANDLE_VALUE;

@@ -84,16 +84,30 @@ namespace SimpleNamedPipe {
              */
             void read_message() {
                 if(is_error) return;
+
+                /* проверяем наличие данных в кнале */
+                DWORD bytes_to_read = 0;
+                BOOL success = PeekNamedPipe(pipe,NULL,0,NULL,&bytes_to_read,NULL);
+                DWORD err = GetLastError();
+                if(!success) {
+                    /* если соединение закрыто, вернется ERROR_PIPE_NOT_CONNECTED */
+                    if(err == ERROR_PIPE_NOT_CONNECTED) {
+                        is_error = true;
+                        return;
+                    }
+                }
+                if(bytes_to_read == 0) return;
+
                 std::vector<char> buf(buffer_size);
                 DWORD bytes_read = 0;
-                BOOL success = ReadFile(
+                success = ReadFile(
                     pipe,
                     &buf[0],
                     buffer_size,
                     &bytes_read,
                     NULL);
 
-                DWORD err = GetLastError();
+                err = GetLastError();
                 if(!success || bytes_read == 0) {
                     if(err == ERROR_BROKEN_PIPE) {
                         is_error = true;
@@ -369,6 +383,23 @@ namespace SimpleNamedPipe {
         inline bool check_error() {
             return is_error;
         }
+
+		/** \brief Отправить сообщение всем клиента
+		 * \param out_message Сообщение
+		 * \return Вернет true, если было хотя бы одно отправление
+		 */
+        bool send_all(const std::string &out_message) {
+			bool is_send = false;
+			auto it = connections.begin();
+			while(it != connections.end()) {
+                if(!it->get()->check_close()) {
+                    it->get()->send(out_message);
+                    is_send = true;
+                }
+                it++;
+            }
+            return is_send;
+		}
 
         ~NamedPipeServer() {
             stop();

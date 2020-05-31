@@ -62,6 +62,10 @@ int main() {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     std::system("pause");
+
+    server.send_all("ping+");
+    std::system("pause");
+
     std::cout << "stop" << std::endl;
     server.stop();
 
