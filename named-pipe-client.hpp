@@ -99,7 +99,7 @@ namespace SimpleNamedPipe {
                         /* Повторяем попытку, если возникает ошибка, отличная от ERROR_PIPE_BUSY */
                         if(GetLastError() != ERROR_PIPE_BUSY) {
                             //on_error(std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
-                            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
                             continue;
                         }
 
@@ -144,7 +144,6 @@ namespace SimpleNamedPipe {
                         on_close();
                         CloseHandle(pipe);
                     }
-
 
                     while(!is_reset && is_connect) {
                         /* отправляем данные */
