@@ -87,7 +87,7 @@ namespace SimpleNamedPipe {
 
                 /* проверяем наличие данных в кнале */
                 DWORD bytes_to_read = 0;
-                BOOL success = PeekNamedPipe(pipe,NULL,0,NULL,&bytes_to_read,NULL);
+                BOOL success = PeekNamedPipe(pipe, NULL, 0, NULL, &bytes_to_read, NULL);
                 DWORD err = GetLastError();
                 if(!success) {
                     /* если соединение закрыто, вернется ERROR_PIPE_NOT_CONNECTED */
@@ -100,13 +100,13 @@ namespace SimpleNamedPipe {
 
                 std::vector<char> buf(buffer_size);
                 DWORD bytes_read = 0;
+
                 success = ReadFile(
                     pipe,
                     &buf[0],
                     buffer_size,
                     &bytes_read,
                     NULL);
-
                 err = GetLastError();
                 if(!success || bytes_read == 0) {
                     if(err == ERROR_BROKEN_PIPE) {
@@ -143,9 +143,17 @@ namespace SimpleNamedPipe {
                     while(!is_reset && !is_error) {
                         read_message();
                     }
-                    FlushFileBuffers(pipe);
-                    DisconnectNamedPipe(pipe);
-                    CloseHandle(pipe);
+
+                    if(pipe != INVALID_HANDLE_VALUE) {
+                        DWORD bytes_to_read = 0;
+                        BOOL success = PeekNamedPipe(pipe, NULL, 0, NULL, &bytes_to_read, NULL);
+                    }
+                    /* очищаем буфер только когда соединение было закрыто не сбросом */
+                    if(pipe != INVALID_HANDLE_VALUE) {
+                        if(!is_reset) FlushFileBuffers(pipe);
+                        DisconnectNamedPipe(pipe);
+                        CloseHandle(pipe);
+                    }
                     on_close(this);
                     is_close = true;
                 });
@@ -198,8 +206,8 @@ namespace SimpleNamedPipe {
             /** \brief Закрыть соединение
              */
             void close() {
-                CancelIo(pipe);
                 is_reset = true;
+                CancelIo(pipe);
             }
 
             /** \brief Проверить закрытие соединения
@@ -268,7 +276,7 @@ namespace SimpleNamedPipe {
                       NULL);                    // default security attribute
 
                     if(pipe == INVALID_HANDLE_VALUE) {
-                        std::cerr << "CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
+                        std::cerr << "NamedPipeServer::init(), CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
                         is_error = false;
                         /* удаляем потоки, где соединение закрыто */
                         clear_connections();
@@ -367,6 +375,7 @@ namespace SimpleNamedPipe {
                     CloseHandle(pipe);
                 }
             }
+
             if(named_pipe_future.valid()) {
                 try {
                     named_pipe_future.wait();
