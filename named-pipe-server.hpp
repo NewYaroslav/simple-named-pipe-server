@@ -143,11 +143,6 @@ namespace SimpleNamedPipe {
                     while(!is_reset && !is_error) {
                         read_message();
                     }
-
-                    if(pipe != INVALID_HANDLE_VALUE) {
-                        DWORD bytes_to_read = 0;
-                        BOOL success = PeekNamedPipe(pipe, NULL, 0, NULL, &bytes_to_read, NULL);
-                    }
                     /* очищаем буфер только когда соединение было закрыто не сбросом */
                     if(pipe != INVALID_HANDLE_VALUE) {
                         if(!is_reset) FlushFileBuffers(pipe);
