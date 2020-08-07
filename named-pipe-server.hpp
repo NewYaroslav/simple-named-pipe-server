@@ -83,8 +83,11 @@ namespace SimpleNamedPipe {
             /** \brief Прочитать сообщение
              */
             void read_message() {
-                if(is_error) return;
-
+                if(is_error) {
+                    std::this_thread::yield();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    return;
+                }
                 /* проверяем наличие данных в кнале */
                 DWORD bytes_to_read = 0;
                 BOOL success = PeekNamedPipe(pipe, NULL, 0, NULL, &bytes_to_read, NULL);
@@ -93,11 +96,16 @@ namespace SimpleNamedPipe {
                     /* если соединение закрыто, вернется ERROR_PIPE_NOT_CONNECTED */
                     if(err == ERROR_PIPE_NOT_CONNECTED) {
                         is_error = true;
+                        std::this_thread::yield();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     }
                 }
-                if(bytes_to_read == 0) return;
-
+                if(bytes_to_read == 0) {
+                    std::this_thread::yield();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    return;
+                }
                 std::vector<char> buf(buffer_size);
                 DWORD bytes_read = 0;
 
@@ -111,6 +119,8 @@ namespace SimpleNamedPipe {
                 if(!success || bytes_read == 0) {
                     if(err == ERROR_BROKEN_PIPE) {
                         is_error = true;
+                        std::this_thread::yield();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     } else {
                         on_error(this,std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
@@ -275,6 +285,8 @@ namespace SimpleNamedPipe {
                         is_error = false;
                         /* удаляем потоки, где соединение закрыто */
                         clear_connections();
+                        std::this_thread::yield();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     }
 
@@ -292,6 +304,8 @@ namespace SimpleNamedPipe {
                     /* если бы сброс, выходим */
                     if(is_reset) {
                         clear_connections();
+                        std::this_thread::yield();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     }
 
@@ -310,6 +324,8 @@ namespace SimpleNamedPipe {
 
                     /* удаляем потоки, где соединение закрыто */
                     clear_connections();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    std::this_thread::yield();
                 }
             });
             return true;
