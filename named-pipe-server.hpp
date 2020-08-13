@@ -229,6 +229,7 @@ namespace SimpleNamedPipe {
 
         void clear_connections() {
             /* удаляем потоки, где соединение закрыто */
+            std::lock_guard<std::mutex> lock(connections_mutex);
             if(connections.size() == 0) return;
             auto it = connections.begin();
             while(it != connections.end()) {
@@ -243,6 +244,7 @@ namespace SimpleNamedPipe {
     private:
 
         std::list<std::shared_ptr<Connection>> connections; /**< Список соединений */
+        std::mutex connections_mutex;
 
         /** \brief Инициализировать сервер
          *
@@ -311,6 +313,7 @@ namespace SimpleNamedPipe {
 
                     if(named_pipe_connected) {
                         /* создаем отдельный поток для приема и передачи сообщений */
+                        std::lock_guard<std::mutex> lock(connections_mutex);
                         connections.push_back(std::make_shared<Connection>(
                             pipe,
                             on_open,
@@ -409,6 +412,7 @@ namespace SimpleNamedPipe {
 		 * \return Вернет true, если было хотя бы одно отправление
 		 */
         bool send_all(const std::string &out_message) {
+			std::lock_guard<std::mutex> lock(connections_mutex);
 			bool is_send = false;
 			auto it = connections.begin();
 			while(it != connections.end()) {
@@ -424,6 +428,12 @@ namespace SimpleNamedPipe {
         ~NamedPipeServer() {
             stop();
         }
+
+        size_t get_connections() {
+            clear_connections();
+            std::lock_guard<std::mutex> lock(connections_mutex);
+            return connections.size();
+        };
     };
 }
 
