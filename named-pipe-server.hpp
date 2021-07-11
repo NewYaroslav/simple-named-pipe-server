@@ -57,7 +57,7 @@ namespace SimpleNamedPipe {
             size_t buffer_size; /**< Размер буфера для чтения и записи */
             size_t timeout;     /**< Время ожидания */
 
-            Config() : name("server"), buffer_size(1024), timeout(50) {
+            Config() : name("server"), buffer_size(2048), timeout(50) {
             };
         } config;   /**< Настройки сервера */
 
@@ -82,10 +82,10 @@ namespace SimpleNamedPipe {
 
             /** \brief Прочитать сообщение
              */
-            void read_message() {
+            void read_message() noexcept {
                 if(is_error) {
                     std::this_thread::yield();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    std::this_thread::sleep_for(std::chrono::microseconds(1));
                     return;
                 }
                 /* проверяем наличие данных в кнале */
@@ -97,13 +97,19 @@ namespace SimpleNamedPipe {
                     if(err == ERROR_PIPE_NOT_CONNECTED) {
                         is_error = true;
                         std::this_thread::yield();
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        std::this_thread::sleep_for(std::chrono::microseconds(1));
+                        return;
+                    } else
+                    if(err == ERROR_BROKEN_PIPE) {
+                        is_error = true;
+                        std::this_thread::yield();
+                        std::this_thread::sleep_for(std::chrono::microseconds(1));
                         return;
                     }
                 }
                 if(bytes_to_read == 0) {
                     std::this_thread::yield();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    std::this_thread::sleep_for(std::chrono::microseconds(1));
                     return;
                 }
                 std::vector<char> buf(buffer_size);
@@ -120,7 +126,7 @@ namespace SimpleNamedPipe {
                     if(err == ERROR_BROKEN_PIPE) {
                         is_error = true;
                         std::this_thread::yield();
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        std::this_thread::sleep_for(std::chrono::microseconds(1));
                         return;
                     } else {
                         on_error(this,std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
@@ -182,7 +188,7 @@ namespace SimpleNamedPipe {
              */
             void send(
                     const std::string &out_message,
-                    const std::function<void(const std::error_code &ec)> &callback = nullptr) {
+                    const std::function<void(const std::error_code &ec)> &callback = nullptr) noexcept {
                 if(is_error) {
                     if(callback != nullptr) {
                         callback(std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
@@ -210,7 +216,7 @@ namespace SimpleNamedPipe {
 
             /** \brief Закрыть соединение
              */
-            void close() {
+            inline void close() noexcept {
                 is_reset = true;
                 CancelIo(pipe);
             }
@@ -218,18 +224,18 @@ namespace SimpleNamedPipe {
             /** \brief Проверить закрытие соединения
              * \return Вернет true, если соединение закрыто
              */
-            inline bool check_close() {
+            inline bool check_close() noexcept {
                 return is_close;
             }
 
-            inline HANDLE get_handle() {
+            inline HANDLE get_handle() noexcept {
                 return pipe;
             }
         };
 
-        void clear_connections() {
+        inline void clear_connections() noexcept {
             /* удаляем потоки, где соединение закрыто */
-            std::lock_guard<std::mutex> lock(connections_mutex);
+            std::lock_guard<std::recursive_mutex> lock(connections_mutex);
             if(connections.size() == 0) return;
             auto it = connections.begin();
             while(it != connections.end()) {
@@ -241,17 +247,24 @@ namespace SimpleNamedPipe {
             }
         }
 
+        inline void reset_connections() noexcept {
+            /* удаляем потоки, где соединение закрыто */
+            std::lock_guard<std::recursive_mutex> lock(connections_mutex);
+            if(connections.size() == 0) return;
+            connections.clear();
+        }
+
     private:
 
         std::list<std::shared_ptr<Connection>> connections; /**< Список соединений */
-        std::mutex connections_mutex;
+        std::recursive_mutex connections_mutex;
 
         /** \brief Инициализировать сервер
          *
          * \param config Настройки сервера
          * \return Вернет true, если инициализация прошла успешно
          */
-        bool init(Config &config) {
+        bool init(Config &config) noexcept {
             if(named_pipe_future.valid()) return false;
             std::string pipename("\\\\.\\pipe\\");
             if(config.name.find("\\") != std::string::npos) return false;
@@ -286,7 +299,8 @@ namespace SimpleNamedPipe {
                         std::cerr << "NamedPipeServer::init(), CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
                         is_error = false;
                         /* удаляем потоки, где соединение закрыто */
-                        clear_connections();
+                        //clear_connections();
+                        reset_connections();
                         std::this_thread::yield();
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
@@ -305,7 +319,7 @@ namespace SimpleNamedPipe {
 
                     /* если бы сброс, выходим */
                     if(is_reset) {
-                        clear_connections();
+                        reset_connections();
                         std::this_thread::yield();
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
@@ -313,7 +327,7 @@ namespace SimpleNamedPipe {
 
                     if(named_pipe_connected) {
                         /* создаем отдельный поток для приема и передачи сообщений */
-                        std::lock_guard<std::mutex> lock(connections_mutex);
+                        std::lock_guard<std::recursive_mutex> lock(connections_mutex);
                         connections.push_back(std::make_shared<Connection>(
                             pipe,
                             on_open,
@@ -330,6 +344,7 @@ namespace SimpleNamedPipe {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     std::this_thread::yield();
                 }
+                reset_connections();
             });
             return true;
         }
@@ -360,13 +375,13 @@ namespace SimpleNamedPipe {
 
         /** \brief Запустить сервер
          */
-        bool start() {
+        bool start() noexcept {
             return init(config);
         }
 
         /** \brief Остановить сервер
          */
-        void stop() {
+        void stop() noexcept {
             is_reset = true;
             if(is_connection) {
                 /* применяем лайфхак, чтобы разблочить функцию
@@ -397,13 +412,14 @@ namespace SimpleNamedPipe {
                 }
                 catch(...) {}
             }
+            reset_connections();
         }
 
         /** \brief Проверить наличие ошибки
          *
          * \return Вернет true, если есть ошибка
          */
-        inline bool check_error() {
+        inline bool check_error() noexcept {
             return is_error;
         }
 
@@ -411,8 +427,8 @@ namespace SimpleNamedPipe {
 		 * \param out_message Сообщение
 		 * \return Вернет true, если было хотя бы одно отправление
 		 */
-        bool send_all(const std::string &out_message) {
-			std::lock_guard<std::mutex> lock(connections_mutex);
+        inline bool send_all(const std::string &out_message) noexcept {
+			std::lock_guard<std::recursive_mutex> lock(connections_mutex);
 			bool is_send = false;
 			auto it = connections.begin();
 			while(it != connections.end()) {
@@ -429,9 +445,12 @@ namespace SimpleNamedPipe {
             stop();
         }
 
-        size_t get_connections() {
+        /** \brief Получить количество соединений
+		 * \return Количество соединений
+		 */
+        inline size_t get_connections() noexcept {
             clear_connections();
-            std::lock_guard<std::mutex> lock(connections_mutex);
+            std::lock_guard<std::recursive_mutex> lock(connections_mutex);
             return connections.size();
         };
     };
