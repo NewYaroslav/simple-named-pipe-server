@@ -57,7 +57,10 @@ namespace SimpleNamedPipe {
             size_t buffer_size; /**< Размер буфера для чтения и записи */
             size_t timeout;     /**< Время ожидания */
 
-            Config() : name("server"), buffer_size(2048), timeout(50) {
+            Config() :
+                name("server"),
+                buffer_size(2048),
+                timeout(50) {
             };
         } config;   /**< Настройки сервера */
 
@@ -78,7 +81,7 @@ namespace SimpleNamedPipe {
             std::function<void(Connection*)> &on_close;
             std::function<void(Connection*, const std::error_code &)> &on_error;
 
-            size_t buffer_size = 1024;              /**< Размер буфера */
+            size_t buffer_size = 2048;              /**< Размер буфера */
 
             /** \brief Прочитать сообщение
              */
@@ -235,7 +238,7 @@ namespace SimpleNamedPipe {
 
         inline void clear_connections() noexcept {
             /* удаляем потоки, где соединение закрыто */
-            std::lock_guard<std::recursive_mutex> lock(connections_mutex);
+            std::lock_guard<std::mutex> lock(connections_mutex);
             if(connections.size() == 0) return;
             auto it = connections.begin();
             while(it != connections.end()) {
@@ -249,7 +252,7 @@ namespace SimpleNamedPipe {
 
         inline void reset_connections() noexcept {
             /* удаляем потоки, где соединение закрыто */
-            std::lock_guard<std::recursive_mutex> lock(connections_mutex);
+            std::lock_guard<std::mutex> lock(connections_mutex);
             if(connections.size() == 0) return;
             connections.clear();
         }
@@ -257,7 +260,8 @@ namespace SimpleNamedPipe {
     private:
 
         std::list<std::shared_ptr<Connection>> connections; /**< Список соединений */
-        std::recursive_mutex connections_mutex;
+        //std::recursive_mutex connections_mutex;
+        std::mutex connections_mutex;
 
         /** \brief Инициализировать сервер
          *
@@ -265,7 +269,7 @@ namespace SimpleNamedPipe {
          * \return Вернет true, если инициализация прошла успешно
          */
         bool init(Config &config) noexcept {
-            if(named_pipe_future.valid()) return false;
+            if (named_pipe_future.valid()) return false;
             std::string pipename("\\\\.\\pipe\\");
             if(config.name.find("\\") != std::string::npos) return false;
             pipename += config.name;
@@ -296,8 +300,8 @@ namespace SimpleNamedPipe {
                       NULL);                    // default security attribute
 
                     if(pipe == INVALID_HANDLE_VALUE) {
-                        std::cerr << "NamedPipeServer::init(), CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
-                        is_error = false;
+                        //std::cerr << "NamedPipeServer::init(), CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
+                        is_error = true;
                         /* удаляем потоки, где соединение закрыто */
                         //clear_connections();
                         reset_connections();
@@ -327,7 +331,7 @@ namespace SimpleNamedPipe {
 
                     if(named_pipe_connected) {
                         /* создаем отдельный поток для приема и передачи сообщений */
-                        std::lock_guard<std::recursive_mutex> lock(connections_mutex);
+                        std::lock_guard<std::mutex> lock(connections_mutex);
                         connections.push_back(std::make_shared<Connection>(
                             pipe,
                             on_open,
@@ -357,14 +361,14 @@ namespace SimpleNamedPipe {
 
         /** \brief Конструктор класса сервера именованных каналов
          *
-         * \param name Имя именованного канала
-         * \param buffer_size Размер буфера для чтения и записи
-         * \param timeout Время ожидания
+         * \param name          Имя именованного канала
+         * \param buffer_size   Размер буфера для чтения и записи
+         * \param timeout       Время ожидания
          */
         NamedPipeServer(
-            const std::string &name,
-            const size_t buffer_size =1024,
-            const size_t timeout = 0) {
+                const std::string &name,
+                const size_t buffer_size = 2048,
+                const size_t timeout = 0) {
             is_reset = false;
             is_error = false;
             is_connection = false;
@@ -375,13 +379,14 @@ namespace SimpleNamedPipe {
 
         /** \brief Запустить сервер
          */
-        bool start() noexcept {
+        inline bool start() noexcept {
+            is_reset = false;
             return init(config);
         }
 
         /** \brief Остановить сервер
          */
-        void stop() noexcept {
+        inline void stop() noexcept {
             is_reset = true;
             if(is_connection) {
                 /* применяем лайфхак, чтобы разблочить функцию
@@ -416,7 +421,6 @@ namespace SimpleNamedPipe {
         }
 
         /** \brief Проверить наличие ошибки
-         *
          * \return Вернет true, если есть ошибка
          */
         inline bool check_error() noexcept {
@@ -424,11 +428,11 @@ namespace SimpleNamedPipe {
         }
 
 		/** \brief Отправить сообщение всем клиента
-		 * \param out_message Сообщение
+		 * \param out_message   Сообщение
 		 * \return Вернет true, если было хотя бы одно отправление
 		 */
         inline bool send_all(const std::string &out_message) noexcept {
-			std::lock_guard<std::recursive_mutex> lock(connections_mutex);
+			std::lock_guard<std::mutex> lock(connections_mutex);
 			bool is_send = false;
 			auto it = connections.begin();
 			while(it != connections.end()) {
@@ -450,7 +454,7 @@ namespace SimpleNamedPipe {
 		 */
         inline size_t get_connections() noexcept {
             clear_connections();
-            std::lock_guard<std::recursive_mutex> lock(connections_mutex);
+            std::lock_guard<std::mutex> lock(connections_mutex);
             return connections.size();
         };
     };
