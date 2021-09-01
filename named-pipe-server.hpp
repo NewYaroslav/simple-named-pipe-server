@@ -21,8 +21,8 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
 */
-#ifndef NAMED_PIPE_SERVER_HPP_INCLUDED
-#define NAMED_PIPE_SERVER_HPP_INCLUDED
+#ifndef SIMPLE_NAMED_PIPE_SERVER_HPP_INCLUDED
+#define SIMPLE_NAMED_PIPE_SERVER_HPP_INCLUDED
 
 #include <iostream>
 #include <windows.h>
@@ -40,14 +40,17 @@ namespace SimpleNamedPipe {
     class NamedPipeServer {
     private:
         HANDLE pipe = INVALID_HANDLE_VALUE;
-        std::future<void> named_pipe_future;    /**< Поток обработки новых подключений */
-        std::atomic<bool> is_reset;             /**< Команда завершения работы */
-        std::atomic<bool> is_error;             /**< Ошибка сервера */
+        std::future<void>   named_pipe_future;      /**< Поток обработки новых подключений */
+        std::mutex          method_mutex;
+        std::atomic<bool>   is_reset;               /**< Команда завершения работы */
+        std::atomic<bool>   is_error;               /**< Ошибка сервера */
+        std::atomic<bool>   is_stop;
 
-        /* переменные для разблокировки ConnectNamedPipe */
+        // переменные для разблокировки ConnectNamedPipe
         std::string connection_pipe_name;
+        std::mutex  connection_pipe_name_mutex;
+
         std::atomic<bool> is_connection;
-        std::mutex connection_pipe_name_mutex;
 
         /** \brief Класс настроек соединения
          */
@@ -71,6 +74,8 @@ namespace SimpleNamedPipe {
         class Connection {
         private:
             HANDLE pipe = INVALID_HANDLE_VALUE;     /**< хендлер именованного канала */
+            std::mutex pipe_mutex;
+
             std::future<void> connection_future;    /**< Поток обработки входящих сообщений */
             std::atomic<bool> is_reset;             /**< Команда завершения работы */
             std::atomic<bool> is_error;             /**< Состояние ошибки */
@@ -86,17 +91,22 @@ namespace SimpleNamedPipe {
             /** \brief Прочитать сообщение
              */
             void read_message() noexcept {
-                if(is_error) {
+                if (is_error) {
                     std::this_thread::yield();
                     std::this_thread::sleep_for(std::chrono::microseconds(1));
                     return;
                 }
-                /* проверяем наличие данных в кнале */
+
+                // проверяем наличие данных в кнале
                 DWORD bytes_to_read = 0;
-                BOOL success = PeekNamedPipe(pipe, NULL, 0, NULL, &bytes_to_read, NULL);
+                BOOL success;
+                {
+                    std::unique_lock<std::mutex> lock(pipe_mutex);
+                    success = PeekNamedPipe(pipe, NULL, 0, NULL, &bytes_to_read, NULL);
+                }
                 DWORD err = GetLastError();
                 if(!success) {
-                    /* если соединение закрыто, вернется ERROR_PIPE_NOT_CONNECTED */
+                    // если соединение закрыто, вернется ERROR_PIPE_NOT_CONNECTED
                     if(err == ERROR_PIPE_NOT_CONNECTED) {
                         is_error = true;
                         std::this_thread::yield();
@@ -110,21 +120,27 @@ namespace SimpleNamedPipe {
                         return;
                     }
                 }
-                if(bytes_to_read == 0) {
+                if (bytes_to_read == 0) {
                     std::this_thread::yield();
                     std::this_thread::sleep_for(std::chrono::microseconds(1));
                     return;
                 }
-                std::vector<char> buf(buffer_size);
+
+                std::vector<char> buffer(buffer_size);
                 DWORD bytes_read = 0;
 
-                success = ReadFile(
-                    pipe,
-                    &buf[0],
-                    buffer_size,
-                    &bytes_read,
-                    NULL);
+                {
+                    std::unique_lock<std::mutex> lock(pipe_mutex);
+                    success = ReadFile(
+                        pipe,
+                        &buffer[0],
+                        std::min((size_t)bytes_to_read, buffer_size),
+                        &bytes_read,
+                        NULL);
+                }
+
                 err = GetLastError();
+
                 if(!success || bytes_read == 0) {
                     if(err == ERROR_BROKEN_PIPE) {
                         is_error = true;
@@ -132,54 +148,62 @@ namespace SimpleNamedPipe {
                         std::this_thread::sleep_for(std::chrono::microseconds(1));
                         return;
                     } else {
-                        on_error(this,std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
+                        if(on_error != nullptr) {
+                            on_error(this,std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
+                        }
                     }
                     is_error = true;
                 }
-                on_message(this,std::string(buf.begin(),buf.begin() + bytes_read));
+                on_message(this, std::string(buffer.begin(),buffer.begin() + bytes_read));
             }
 
         public:
 
             Connection(
-                const HANDLE _pipe,
-                std::function<void(Connection*)> &_on_open,
-                std::function<void(Connection*, const std::string &in_message)> &_on_message,
-                std::function<void(Connection*)> &_on_close,
-                std::function<void(Connection*, const std::error_code &)> &_on_error,
-                const size_t _buffer_size) :
-                    pipe(_pipe),
-                    on_open(_on_open),
-                    on_message(_on_message),
-                    on_close(_on_close),
-                    on_error(_on_error),
-                    buffer_size(_buffer_size) {
+                    const HANDLE _pipe,
+                    std::function<void(Connection*)> &_on_open,
+                    std::function<void(Connection*, const std::string &in_message)> &_on_message,
+                    std::function<void(Connection*)> &_on_close,
+                    std::function<void(Connection*, const std::error_code &)> &_on_error,
+                    const size_t _buffer_size) :
+                        pipe(_pipe),
+                        on_open(_on_open),
+                        on_message(_on_message),
+                        on_close(_on_close),
+                        on_error(_on_error),
+                        buffer_size(_buffer_size) {
+
                 is_reset = false;
                 is_error = false;
                 is_close = false;
+
                 connection_future = std::async(std::launch::async,[&]() {
                     on_open(this);
-                    while(!is_reset && !is_error) {
+                    while (!is_reset && !is_error) {
                         read_message();
                     }
-                    /* очищаем буфер только когда соединение было закрыто не сбросом */
-                    if(pipe != INVALID_HANDLE_VALUE) {
-                        if(!is_reset) FlushFileBuffers(pipe);
-                        DisconnectNamedPipe(pipe);
-                        CloseHandle(pipe);
-                    }
                     on_close(this);
-                    is_close = true;
+                    // очищаем буфер только когда соединение было закрыто не сбросом
+                    {
+                        std::lock_guard<std::mutex> lock(pipe_mutex);
+                        if(pipe != INVALID_HANDLE_VALUE) {
+                            if (!is_reset) FlushFileBuffers(pipe);
+                            DisconnectNamedPipe(pipe);
+                            CloseHandle(pipe);
+                            pipe = INVALID_HANDLE_VALUE;
+                        }
+                        is_close = true;
+                    }
                 });
             }
 
             ~Connection() {
-                is_reset = true;
-                CancelIo(pipe);
-                if(connection_future.valid()) {
+                close();
+                std::shared_future<void> connection_share = connection_future.share();
+                if(connection_share.valid()) {
                     try {
-                        connection_future.wait();
-                        connection_future.get();
+                        connection_share.wait();
+                        connection_share.get();
                     }
                     catch(...) {}
                 }
@@ -192,12 +216,17 @@ namespace SimpleNamedPipe {
             void send(
                     const std::string &out_message,
                     const std::function<void(const std::error_code &ec)> &callback = nullptr) noexcept {
-                if(is_error) {
+                std::unique_lock<std::mutex> lock(pipe_mutex);
+                if (is_reset) return;
+                if (is_error) {
                     if(callback != nullptr) {
+                        lock.unlock();
                         callback(std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
+                        lock.lock();
                     }
                     return;
                 }
+                if(pipe == INVALID_HANDLE_VALUE) return;
                 DWORD bytes_written = 0;
                 BOOL success = WriteFile(
                     pipe,
@@ -207,12 +236,16 @@ namespace SimpleNamedPipe {
                     NULL);                  // не перекрывается I/O
 
                 if(!success || out_message.size() != bytes_written) {
-                    /* ошибка записи, закрываем соединение */
+                    // ошибка записи, закрываем соединение
+                    lock.unlock();
                     if(callback != nullptr) {
                         callback(std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
                     }
-                    on_error(this,std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
-                    CancelIo(pipe);
+                    if(on_error != nullptr) {
+                        on_error(this,std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
+                    }
+                    lock.lock();
+                    CancelIo (pipe);
                     is_error = true;
                 }
             }
@@ -221,7 +254,6 @@ namespace SimpleNamedPipe {
              */
             inline void close() noexcept {
                 is_reset = true;
-                CancelIo(pipe);
             }
 
             /** \brief Проверить закрытие соединения
@@ -232,12 +264,13 @@ namespace SimpleNamedPipe {
             }
 
             inline HANDLE get_handle() noexcept {
+                std::lock_guard<std::mutex> lock(pipe_mutex);
                 return pipe;
             }
         };
 
         inline void clear_connections() noexcept {
-            /* удаляем потоки, где соединение закрыто */
+            // удаляем потоки, где соединение закрыто
             std::lock_guard<std::mutex> lock(connections_mutex);
             if(connections.size() == 0) return;
             auto it = connections.begin();
@@ -251,16 +284,22 @@ namespace SimpleNamedPipe {
         }
 
         inline void reset_connections() noexcept {
-            /* удаляем потоки, где соединение закрыто */
+            // удаляем потоки, где соединение закрыто
             std::lock_guard<std::mutex> lock(connections_mutex);
             if(connections.size() == 0) return;
+            auto it = connections.begin();
+            while(it != connections.end()) {
+                if(it->get()->check_close()) {
+                    it->get()->close();
+                }
+                it++;
+            }
             connections.clear();
         }
 
     private:
 
         std::list<std::shared_ptr<Connection>> connections; /**< Список соединений */
-        //std::recursive_mutex connections_mutex;
         std::mutex connections_mutex;
 
         /** \brief Инициализировать сервер
@@ -281,6 +320,7 @@ namespace SimpleNamedPipe {
                 connection_pipe_name = pipename;
             }
 
+            is_stop = false;
             named_pipe_future = std::async(std::launch::async,[
                     &,
                     pipename,
@@ -300,37 +340,38 @@ namespace SimpleNamedPipe {
                       NULL);                    // default security attribute
 
                     if(pipe == INVALID_HANDLE_VALUE) {
-                        //std::cerr << "NamedPipeServer::init(), CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
+                        // std::cerr << "NamedPipeServer::init(), CreateNamedPipeA failed, GLE=" << GetLastError() << std::endl;
                         is_error = true;
-                        /* удаляем потоки, где соединение закрыто */
-                        //clear_connections();
+                        // удаляем потоки, где соединение закрыто
                         reset_connections();
                         std::this_thread::yield();
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        is_stop = true;
                         return;
                     }
 
-                    /* устанавливем флаг соединения (необходим для хака во время остановки сервера) */
+                    // устанавливем флаг соединения (необходим для хака во время остановки сервера)
                     is_connection = true;
 
-                    /* ждем соединения с сервером */
-                    BOOL named_pipe_connected;
-                    named_pipe_connected = ConnectNamedPipe(pipe, NULL) ?
-                        TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+                    // ждем соединения с сервером
+                    BOOL named_pipe_connected = ConnectNamedPipe(pipe, NULL) ?
+                        TRUE :
+                        (GetLastError() == ERROR_PIPE_CONNECTED);
 
-                    /* снимаем флаг соединения (необходим для хака во время остановки сервера) */
+                    // снимаем флаг соединения (необходим для хака во время остановки сервера)
                     is_connection = false;
 
-                    /* если бы сброс, выходим */
+                    // если бы сброс, выходим
                     if(is_reset) {
                         reset_connections();
                         std::this_thread::yield();
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        is_stop = true;
                         return;
                     }
 
                     if(named_pipe_connected) {
-                        /* создаем отдельный поток для приема и передачи сообщений */
+                        // создаем отдельный поток для приема и передачи сообщений
                         std::lock_guard<std::mutex> lock(connections_mutex);
                         connections.push_back(std::make_shared<Connection>(
                             pipe,
@@ -343,15 +384,38 @@ namespace SimpleNamedPipe {
                         CloseHandle(pipe);
                     }
 
-                    /* удаляем потоки, где соединение закрыто */
+
+                    // удаляем потоки, где соединение закрыто
                     clear_connections();
+
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     std::this_thread::yield();
                 }
+
                 reset_connections();
+                is_stop = true;
             });
             return true;
         }
+
+        bool busy_future() {
+            while (true) {
+                try {
+                    if(named_pipe_future.valid()) {
+                        std::future_status status = named_pipe_future.wait_for(std::chrono::milliseconds(0));
+                        if(status != std::future_status::ready) {
+                            return true;
+                        }
+                    }
+                }
+                catch(const std::exception &e) {}
+                catch(...) {}
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::yield();
+            }
+            return false;
+        } // busy_future
+
     public:
 
         std::function<void(Connection*)> on_open;
@@ -371,6 +435,7 @@ namespace SimpleNamedPipe {
                 const size_t timeout = 0) {
             is_reset = false;
             is_error = false;
+            is_stop = true;
             is_connection = false;
             config.name = name;
             config.buffer_size = buffer_size;
@@ -380,6 +445,7 @@ namespace SimpleNamedPipe {
         /** \brief Запустить сервер
          */
         inline bool start() noexcept {
+            std::lock_guard<std::mutex> lock(method_mutex);
             is_reset = false;
             return init(config);
         }
@@ -387,15 +453,14 @@ namespace SimpleNamedPipe {
         /** \brief Остановить сервер
          */
         inline void stop() noexcept {
+            std::lock_guard<std::mutex> lock(method_mutex);
             is_reset = true;
-            if(is_connection) {
-                /* применяем лайфхак, чтобы разблочить функцию
-                 * ConnectNamedPipe
-                 */
-                 HANDLE hack_pipe;
-                 {
-                     std::lock_guard<std::mutex> lock(connection_pipe_name_mutex);
-                     hack_pipe = CreateFile(
+            if (is_connection) {
+                // применяем лайфхак, чтобы разблочить функцию ConnectNamedPipe
+                HANDLE hack_pipe;
+                {
+                    std::lock_guard<std::mutex> lock(connection_pipe_name_mutex);
+                    hack_pipe = CreateFile(
                         (LPCSTR)connection_pipe_name.c_str(), // имя канала
                         GENERIC_READ |  // read and write access
                         GENERIC_WRITE,
@@ -410,10 +475,11 @@ namespace SimpleNamedPipe {
                 }
             }
 
-            if(named_pipe_future.valid()) {
+            std::shared_future<void> named_pipe_share = named_pipe_future.share();
+            if(named_pipe_share.valid()) {
                 try {
-                    named_pipe_future.wait();
-                    named_pipe_future.get();
+                    named_pipe_share.wait();
+                    named_pipe_share.get();
                 }
                 catch(...) {}
             }
@@ -453,11 +519,17 @@ namespace SimpleNamedPipe {
 		 * \return Количество соединений
 		 */
         inline size_t get_connections() noexcept {
-            clear_connections();
+            size_t counter = 0;
             std::lock_guard<std::mutex> lock(connections_mutex);
-            return connections.size();
+            if(connections.empty()) return counter;
+            for (auto it : connections) {
+                if(!it->check_close()) {
+                    ++counter;
+                }
+            }
+            return counter;
         };
     };
 }
 
-#endif // NAMED_PIPE_SERVER_HPP_INCLUDED
+#endif // SIMPLE_NAMED_PIPE_SERVER_HPP_INCLUDED

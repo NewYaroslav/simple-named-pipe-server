@@ -21,8 +21,8 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
 */
-#ifndef NAMED_PIPE_CLIENT_HPP_INCLUDED
-#define NAMED_PIPE_CLIENT_HPP_INCLUDED
+#ifndef SIMPLE_NAMED_PIPE_CLIENT_HPP_INCLUDED
+#define SIMPLE_NAMED_PIPE_CLIENT_HPP_INCLUDED
 
 #include <iostream>
 #include <windows.h>
@@ -40,6 +40,8 @@ namespace SimpleNamedPipe {
     class NamedPipeClient {
     private:
         HANDLE pipe = INVALID_HANDLE_VALUE;
+        std::mutex pipe_mutex;
+
         std::future<void> named_pipe_future;    /**< Поток для обработки сообщений */
         std::atomic<bool> is_reset;             /**< Команда завершения работы */
         std::atomic<bool> is_connect;
@@ -83,6 +85,7 @@ namespace SimpleNamedPipe {
                 while(!is_reset) {
                     /* устанавливаем связь с сервером */
                     while(!is_reset) {
+                        std::unique_lock<std::mutex> lock(pipe_mutex);
                         pipe = CreateFile(
                             (LPCSTR)pipename.c_str(), // имя канала
                             GENERIC_READ |  // read and write access
@@ -111,7 +114,7 @@ namespace SimpleNamedPipe {
                         }
 
                     } // while
-                    if(is_reset) return;
+                    if (is_reset) return;
 
                     /* связь с сервером установлена */
 
@@ -125,6 +128,7 @@ namespace SimpleNamedPipe {
                      * GENERIC_READ и FILE_WRITE_ATTRIBUTES
                      */
                     DWORD mode = PIPE_READMODE_MESSAGE;
+                    std::unique_lock<std::mutex> lock(pipe_mutex);
                     BOOL success = SetNamedPipeHandleState(
                         pipe,
                         &mode,
@@ -132,18 +136,27 @@ namespace SimpleNamedPipe {
                         NULL);    // не устанавливайте максимальное время
 
                     if(!success) {
+                        lock.unlock();
                         on_error(std::error_code(static_cast<int>(GetLastError()), std::generic_category()));
+                        lock.lock();
                         continue;
                     }
 
                     is_connect = true;
+
+                    lock.unlock();
                     on_open();
+                    lock.lock();
 
                     if(is_reset) {
                         is_connect = false;
+                        lock.unlock();
                         on_close();
+                        lock.lock();
                         CloseHandle(pipe);
                     }
+
+                    lock.unlock();
 
                     while(!is_reset && is_connect) {
                         /* отправляем данные */
@@ -160,12 +173,17 @@ namespace SimpleNamedPipe {
                                 queue_messages.pop();
                             }
                             DWORD bytes_written = 0;
-                            BOOL success = WriteFile(
-                                pipe,
-                                str.c_str(),    // буфер для записи
-                                str.size(),     // количество байтов для записи
-                                &bytes_written,         // количество записанных байтов
-                                NULL);                  // не перекрывается I/O
+                            BOOL success;
+
+                            {
+                                std::unique_lock<std::mutex> lock(pipe_mutex);
+                                success = WriteFile(
+                                    pipe,
+                                    str.c_str(),        // буфер для записи
+                                    str.size(),         // количество байтов для записи
+                                    &bytes_written,     // количество записанных байтов
+                                    NULL);              // не перекрывается I/O
+                            }
 
                             DWORD err = GetLastError();
                             if(!success || str.size() != bytes_written) {
@@ -178,7 +196,12 @@ namespace SimpleNamedPipe {
 
                         /* проверяем наличие данных в кнале */
                         DWORD bytes_to_read = 0;
-                        success = PeekNamedPipe(pipe,NULL,0,NULL,&bytes_to_read,NULL);
+
+                        {
+                            std::unique_lock<std::mutex> lock(pipe_mutex);
+                            success = PeekNamedPipe(pipe,NULL,0,NULL,&bytes_to_read,NULL);
+                        }
+
                         DWORD err = GetLastError();
                         if(!success) {
                             /* если соединение закрыто, вернется ERROR_PIPE_NOT_CONNECTED */
@@ -189,12 +212,17 @@ namespace SimpleNamedPipe {
                         /* читаем данные */
                         DWORD bytes_read = 0;
                         std::vector<char> buf(config.buffer_size);
-                        success = ReadFile(
-                            pipe,
-                            &buf[0],
-                            config.buffer_size,
-                            &bytes_read,
-                            NULL);
+
+                        {
+                            std::unique_lock<std::mutex> lock(pipe_mutex);
+                            success = ReadFile(
+                                pipe,
+                                &buf[0],
+                                config.buffer_size,
+                                &bytes_read,
+                                NULL);
+                        }
+
 
                         if(is_reset) break;
                         err = GetLastError();
@@ -208,7 +236,10 @@ namespace SimpleNamedPipe {
                     } // while
                     is_connect = false;
                     on_close();
-                    CloseHandle(pipe);
+                    {
+                        std::unique_lock<std::mutex> lock(pipe_mutex);
+                        CloseHandle(pipe);
+                    }
                     break;
                 }
             });
@@ -277,6 +308,7 @@ namespace SimpleNamedPipe {
         }
 
         inline HANDLE get_handle() {
+            std::unique_lock<std::mutex> lock(pipe_mutex);
             return pipe;
         }
 
@@ -286,4 +318,4 @@ namespace SimpleNamedPipe {
     };
 }
 
-#endif // NAMED_PIPE_CLIENT_HPP_INCLUDED
+#endif // SIMPLE_NAMED_PIPE_CLIENT_HPP_INCLUDED
