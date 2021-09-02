@@ -93,7 +93,7 @@ namespace SimpleNamedPipe {
             void read_message() noexcept {
                 if (is_error) {
                     std::this_thread::yield();
-                    std::this_thread::sleep_for(std::chrono::microseconds(1));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     return;
                 }
 
@@ -110,19 +110,19 @@ namespace SimpleNamedPipe {
                     if(err == ERROR_PIPE_NOT_CONNECTED) {
                         is_error = true;
                         std::this_thread::yield();
-                        std::this_thread::sleep_for(std::chrono::microseconds(1));
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     } else
                     if(err == ERROR_BROKEN_PIPE) {
                         is_error = true;
                         std::this_thread::yield();
-                        std::this_thread::sleep_for(std::chrono::microseconds(1));
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     }
                 }
                 if (bytes_to_read == 0) {
                     std::this_thread::yield();
-                    std::this_thread::sleep_for(std::chrono::microseconds(1));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     return;
                 }
 
@@ -145,7 +145,7 @@ namespace SimpleNamedPipe {
                     if(err == ERROR_BROKEN_PIPE) {
                         is_error = true;
                         std::this_thread::yield();
-                        std::this_thread::sleep_for(std::chrono::microseconds(1));
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         return;
                     } else {
                         if(on_error != nullptr) {
