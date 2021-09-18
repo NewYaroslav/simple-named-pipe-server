@@ -26,12 +26,16 @@
 
 #include <iostream>
 #include <windows.h>
+
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 #include <future>
 #include <system_error>
+
 #include <list>
 #include <vector>
+#include <queue>
 
 namespace SimpleNamedPipe {
 
@@ -41,7 +45,14 @@ namespace SimpleNamedPipe {
     private:
         HANDLE pipe = INVALID_HANDLE_VALUE;
         std::future<void>   named_pipe_future;      /**< Поток обработки новых подключений */
+        std::future<void>   named_pipe_send_future; /**< Поток обработки исходящих сообщений */
+
         std::mutex          method_mutex;
+
+        std::condition_variable str_queue_check;
+        std::queue<std::string> str_queue;
+        std::mutex              str_queue_mutex;
+
         std::atomic<bool>   is_reset;               /**< Команда завершения работы */
         std::atomic<bool>   is_error;               /**< Ошибка сервера */
         std::atomic<bool>   is_stop;
@@ -77,6 +88,7 @@ namespace SimpleNamedPipe {
             std::mutex pipe_mutex;
 
             std::future<void> connection_future;    /**< Поток обработки входящих сообщений */
+
             std::atomic<bool> is_reset;             /**< Команда завершения работы */
             std::atomic<bool> is_error;             /**< Состояние ошибки */
             std::atomic<bool> is_close;             /**< Флаг закрытия соединения */
@@ -228,6 +240,7 @@ namespace SimpleNamedPipe {
                 }
                 if(pipe == INVALID_HANDLE_VALUE) return;
                 DWORD bytes_written = 0;
+
                 BOOL success = WriteFile(
                     pipe,
                     out_message.c_str(),    // буфер для записи
@@ -388,12 +401,41 @@ namespace SimpleNamedPipe {
                     // удаляем потоки, где соединение закрыто
                     clear_connections();
 
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     std::this_thread::yield();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
 
                 reset_connections();
                 is_stop = true;
+            });
+            named_pipe_send_future = std::async(std::launch::async,[&]() {
+                while (!is_reset) {
+                    std::queue<std::string> messages_queue;
+                    {
+                        std::unique_lock<std::mutex> locker(str_queue_mutex);
+                        str_queue_check.wait(locker, [&](){return !str_queue.empty() || is_reset;});
+                        if (is_reset) return;
+                        std::swap(str_queue, messages_queue);
+                    }
+                    if (messages_queue.empty()) {
+                        std::this_thread::yield();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        continue;
+                    }
+
+                    while (!messages_queue.empty()) {
+                        std::string out_message = messages_queue.front();
+                        messages_queue.pop();
+                        std::lock_guard<std::mutex> lock(connections_mutex);
+                        auto it = connections.begin();
+                        while(it != connections.end()) {
+                            if(!it->get()->check_close()) {
+                                it->get()->send(out_message);
+                            }
+                            it++;
+                        }
+                    }
+                }
             });
             return true;
         }
@@ -483,6 +525,16 @@ namespace SimpleNamedPipe {
                 }
                 catch(...) {}
             }
+
+            str_queue_check.notify_one();
+            std::shared_future<void> named_pipe_send_share = named_pipe_send_future.share();
+            if(named_pipe_send_share.valid()) {
+                try {
+                    named_pipe_send_share.wait();
+                    named_pipe_send_share.get();
+                }
+                catch(...) {}
+            }
             reset_connections();
         }
 
@@ -498,17 +550,11 @@ namespace SimpleNamedPipe {
 		 * \return Вернет true, если было хотя бы одно отправление
 		 */
         inline bool send_all(const std::string &out_message) noexcept {
-			std::lock_guard<std::mutex> lock(connections_mutex);
-			bool is_send = false;
-			auto it = connections.begin();
-			while(it != connections.end()) {
-                if(!it->get()->check_close()) {
-                    it->get()->send(out_message);
-                    is_send = true;
-                }
-                it++;
-            }
-            return is_send;
+			if (get_connections() == 0) return false;
+			std::unique_lock<std::mutex> locker(str_queue_mutex);
+			str_queue.push(out_message);
+			str_queue_check.notify_one();
+			return true;
 		}
 
         ~NamedPipeServer() {
