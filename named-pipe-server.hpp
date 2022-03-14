@@ -408,6 +408,7 @@ namespace SimpleNamedPipe {
                 reset_connections();
                 is_stop = true;
             });
+
             named_pipe_send_future = std::async(std::launch::async,[&]() {
                 while (!is_reset) {
                     std::queue<std::string> messages_queue;

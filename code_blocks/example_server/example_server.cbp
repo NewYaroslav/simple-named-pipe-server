@@ -26,6 +26,7 @@
 			<Add option="-Wall" />
 			<Add option="-fexceptions" />
 		</Compiler>
+		<Unit filename="../../named-pipe-client.hpp" />
 		<Unit filename="../../named-pipe-server.hpp" />
 		<Unit filename="main.cpp" />
 		<Extensions />
