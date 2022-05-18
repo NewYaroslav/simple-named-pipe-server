@@ -1,75 +1,75 @@
 //+------------------------------------------------------------------+
-//|                                            named_pipe_client.mq4 |
-//|                                     Copyright 2021, NewYaroslav. |
-//|          https://github.com/NewYaroslav/simple-named-pipe-server |
+//|											   named_pipe_client.mq4 |
+//|										Copyright 2021, NewYaroslav. |
+//|			 https://github.com/NewYaroslav/simple-named-pipe-server |
 //+------------------------------------------------------------------+
 #include "..\include\named_pipe_client.mqh"
 
-input string pipe_name      = "test-pipe"; // Named Pipe for the stream of quotes
-input int    timer_period   = 10; // Timer period for processing incoming messages
+input string pipe_name		= "test-pipe"; // Named Pipe for the stream of quotes
+input int	 timer_period	= 10; // Timer period for processing incoming messages
 
-NamedPipeClient     *pipe           = NULL;
+NamedPipeClient		*pipe			= NULL;
 
 //+------------------------------------------------------------------+
-//| NamedPipeClient function                                   |
+//| NamedPipeClient function								   |
 //+------------------------------------------------------------------+
 void NamedPipeClient::on_open(NamedPipeClient *pointer) {
-    Print("open connection with ", pointer.get_pipe_name());
+	Print("open connection with ", pointer.get_pipe_name());
 }
 
 void NamedPipeClient::on_close(NamedPipeClient *pointer) {
-    Print("closed connection with ", pointer.get_pipe_name());
+	Print("closed connection with ", pointer.get_pipe_name());
 }
 
 void NamedPipeClient::on_message(NamedPipeClient *pointer, const string &message) {
-    Print("message: " + message);
+	Print("message: " + message);
 }
 
 void NamedPipeClient::on_error(NamedPipeClient *pointer, const string &error_message) {
-    Print("Error! What: " + error_message);
+	Print("Error! What: " + error_message);
 }
 
 //+------------------------------------------------------------------+
-//| Expert initialization function                                   |
+//| Expert initialization function									 |
 //+------------------------------------------------------------------+
 int OnInit() {
-    if (pipe == NULL) {
-        if ((pipe = new NamedPipeClient(pipe_name)) == NULL) return(false);
-    }
+	if (pipe == NULL) {
+		if ((pipe = new NamedPipeClient(pipe_name)) == NULL) return(false);
+	}
 
-    EventSetMillisecondTimer(timer_period);
-    return(INIT_SUCCEEDED);
+	EventSetMillisecondTimer(timer_period);
+	return(INIT_SUCCEEDED);
 }
 //+------------------------------------------------------------------+
-//| Expert deinitialization function                                 |
+//| Expert deinitialization function								 |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason) {
-    EventKillTimer();
-    if (pipe != NULL) delete pipe;
+	EventKillTimer();
+	if (pipe != NULL) delete pipe;
 }
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Expert tick function											 |
 //+------------------------------------------------------------------+
 void OnTick() {
 
 }
 //+------------------------------------------------------------------+
-//| Timer function                                                   |
+//| Timer function													 |
 //+------------------------------------------------------------------+
 void OnTimer() {
-    static int ticks = 0;
-    if (pipe != NULL) pipe.on_timer();
-    
-    ticks += timer_period;
-    if (ticks >= 1000) {
-        ticks = 0;
+	static int ticks = 0;
+	if (pipe != NULL) pipe.on_timer();
+	
+	ticks += timer_period;
+	if (ticks >= 1000) {
+		ticks = 0;
 
-        if (pipe != NULL) {
-            if (pipe.connected()) {
-                const string str_ping = "ping";
-                pipe.write(str_ping);
-            } // if (pipe.connected())
-        } // if (pipe != NULL)
-    } // if (ticks >= 1000)
+		if (pipe != NULL) {
+			if (pipe.connected()) {
+				const string str_ping = "ping";
+				pipe.write(str_ping);
+			} // if (pipe.connected())
+		} // if (pipe != NULL)
+	} // if (ticks >= 1000)
 }
 //+------------------------------------------------------------------+
